@@ -16,9 +16,23 @@
 #                       g = (1, 0)'
 #
 # Solvent constants are fixed here and are NOT read from the
-# spreadsheets (the 'water' column in those files is outdated).
-# Source: collaborator email, 2026-07-15 (literature dielectric
-# constants and water activities).
+# spreadsheets.  Source: collaborator email of 2026-07-15, giving
+# literature dielectric constants and water ACTIVITIES.
+#
+# Relation to the columns inside the workbooks, for anyone checking:
+#   'dielectric' column = 63.5 / 58.71 / 53.91 -- agrees with EPSILON
+#                         below (verified for every file that has it).
+#   'water'      column = 0.813 / 0.743 / 0.660 -- these are water MOLE
+#                         FRACTIONS, a different quantity from the
+#                         activities used here, and are superseded by
+#                         the 2026-07-15 values.  They are deliberately
+#                         not read.
+# The distinction matters only for the Yasuda-Shedlovsky model, whose
+# offset is -log10(a_k): with the activities the offset is
+# +0.0395/+0.0419/+0.0453, with the mole fractions it would be
+# +0.0899/+0.1284/+0.1805, shifting the mixture-level values and hence
+# the extrapolated aqueous pKa.  The concentration model does not use
+# this quantity at all.
 # ==============================================================
 
 CONDITIONS <- c("40% ACN", "50% ACN", "60% ACN")

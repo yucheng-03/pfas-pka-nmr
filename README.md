@@ -32,8 +32,7 @@ shift column is `Chemical Shift (ppm)` in most sheets but `deltai_calc` in some 
 experimentally measured offset). The raw `pH` column can be read with
 `read_titration(..., ph_col = "raw")` for comparison.
 
-Solvent constants are **fixed in `R/constants.R` and are not read from the spreadsheets**
-(the `water` column in the files is outdated):
+Solvent constants are **fixed in `R/constants.R` and are not read from the spreadsheets**:
 
 | Mixture | dielectric constant | water activity | ACN volume fraction |
 |---|---|---|---|
@@ -44,6 +43,14 @@ Solvent constants are **fixed in `R/constants.R` and are not read from the sprea
 
 Source: collaborator email of 2026-07-15 (literature dielectric constants and water
 activities).
+
+The workbooks also carry `dielectric` and `water` columns. The `dielectric` column agrees
+with the values above (checked for every file that has it). The `water` column holds
+`0.813 / 0.743 / 0.660`, which are water **mole fractions** — a different quantity from
+the activities used here, superseded by the 2026-07-15 values — so it is deliberately not
+read. This affects only the Yasuda–Shedlovsky model, whose offset is `-log10(a_k)`:
+`+0.0395/+0.0419/+0.0453` with the activities against `+0.0899/+0.1284/+0.1805` with the
+mole fractions. The concentration model does not use the quantity at all.
 
 ## 2. Model
 
