@@ -27,8 +27,8 @@ both, and an earlier measurement session for 7:3. All of them are analyzed; the 
 
 Columns are selected **by name**, never by position: the workbooks carry different extra
 columns, the pH header appears as `pH` or `Adjusted pH` in either capitalisation, and the
-shift column is `Chemical Shift (ppm)` in most files but `deltai_calc` in the other-CF2
-files. **All fits use the `Adjusted pH` column** (the probe reading corrected by the
+shift column is `Chemical Shift (ppm)` in most sheets but `deltai_calc` in some (the
+5:3 other-CF2 file); whichever of the two is present is the resonance that file reports. **All fits use the `Adjusted pH` column** (the probe reading corrected by the
 experimentally measured offset). The raw `pH` column can be read with
 `read_titration(..., ph_col = "raw")` for comparison.
 
@@ -108,8 +108,8 @@ explain. It is zero whenever the points are consistent with the line, and `V_c` 
 reduces to pure propagation of the `nu_k`.
 
 **Standard errors.** Every standard error in the report is the same quadratic form
-`Var(aqueous) = g' V g` evaluated at a different `V`. Three conventions appear in the
-CSV output:
+`Var(aqueous) = g' V g` evaluated at a different `V`. The report uses `SE_joint` for
+Route A and `SE_c` for Route B; the CSV additionally carries three reference columns:
 
 | column | `V` used | meaning |
 |---|---|---|
@@ -117,6 +117,7 @@ CSV output:
 | `SE_c` | `V_c` above | reported for the two-step route |
 | `SE_a` | `V_c` with `tau2` forced to 0 | measurement propagation only, reference |
 | `SE_b` | equal-variance OLS mean-response SE | the earlier convention, reference |
+| `SE_joint_numeric` | the optimizer's own SE for the aqueous parameter | independent cross-check of `SE_joint`, compared in `verify.R` |
 
 **Lack-of-fit statistic.** `Q = SS_res / sum_k (1 - h_k) nu_k` compares the observed
 scatter of the three points with the scatter their measurement variances alone would
@@ -158,6 +159,7 @@ beginning with `v` are the Part 2 spreadsheets.
 
 ## 6. Checks performed by `verify.R`
 
+0. the model configuration (see below);
 1. the aqueous estimate equals `g' theta` for both routes;
 2. `SE_c` equals `sqrt(g' V_c g)` rebuilt from the reported parameter standard errors and
    correlation — i.e. a reader can reproduce it from the printed table;
@@ -167,8 +169,16 @@ beginning with `v` are the Part 2 spreadsheets.
 5. the two models share identical stage-1 estimates (those are fitted per mixture and
    cannot depend on the solvent model);
 6. the analytic joint covariance agrees with the optimizer's own standard error for the
-   aqueous parameter (reported as a relative difference, currently ~1e-4);
-7. optionally, agreement with a reference CSV of a previous run.
+   aqueous parameter, to 5% relative (currently ~1e-4). Because the joint fit is run in
+   coordinates centered at the read-off point, that parameter *is* the aqueous value, so
+   its standard error is an independent estimate of `g' V g`: this check is what would
+   catch a transposed covariance matrix or a mis-contracted read-off vector;
+7. agreement with `summary_all_from_code.csv` of the report folder, if reachable.
+
+Check 0 additionally asserts the model configuration itself — each spec's covariate,
+read-off point and offset, and the design identities `sum(ell) = 1`,
+`sum(ell * x) = x0` — so that a mis-specified model cannot pass by propagating
+consistently through the identities.
 
 Any failure stops the script.
 

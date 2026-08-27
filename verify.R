@@ -3,18 +3,27 @@
 #
 #   Rscript verify.R
 #
-# 1. Algebraic identities that must hold exactly, for every dataset
-#    and both models:
+# 0. Model configuration: each spec's covariate, offset and read-off
+#    point are what the analysis claims they are (a wrong x0 or a
+#    wrong offset would otherwise propagate consistently and stay
+#    invisible to the identity checks below).
+# 1. Algebraic identities that must hold, for every dataset and both
+#    models:
 #      a) the aqueous estimate equals g' theta;
 #      b) SE_c equals sqrt(g' V_c g);
 #      c) under the concentration model (read-off at C = 0) the
 #         aqueous SE equals the SE of the intercept;
 #      d) tau2_hat > 0 exactly when Q > 1;
 #      e) the two models share the same stage-1 estimates (those are
-#         fitted per mixture and cannot depend on the solvent model).
-# 2. Agreement with the delivered report numbers, if the reference
-#    CSV of the report folder is reachable (optional).
-# Any failure stops the script with an error.
+#         fitted per mixture and cannot depend on the solvent model);
+#      f) the analytic covariance agrees with the optimizer's own
+#         standard error for the aqueous parameter.  The joint fit is
+#         run in coordinates centered at the read-off point, so that
+#         parameter IS the aqueous value and its reported SE is an
+#         independent estimate of g' V g -- this is what catches a
+#         transposed covariance or a mis-contracted read-off vector.
+# 2. Agreement with the reference CSV of the delivered report.
+# Every check stops the script on failure.
 # ==============================================================
 for (f in c("constants", "data", "fit", "inference"))
   source(file.path("R", paste0(f, ".R")))
@@ -27,6 +36,23 @@ ok  <- function(name, value, tol = 1e-9) {
 }
 
 specs <- list(ys = model_spec("ys"), conc = model_spec("conc"))
+
+# (0) the model configuration is what the analysis claims
+ok("ys spec: covariate equals 1/eps",
+   max(abs(specs$ys$x - 1 / EPSILON)))
+ok("ys spec: read-off point equals 1/eps_water",
+   abs(specs$ys$x0 - 1 / EPSILON_WATER))
+ok("ys spec: offset equals -log10(water activity)",
+   max(abs(specs$ys$offset + log10(WATER_ACT))))
+ok("conc spec: covariate equals the ACN volume fraction",
+   max(abs(specs$conc$x - ACN_FRACTION)))
+ok("conc spec: read-off point equals 0 and offset equals 0",
+   max(abs(specs$conc$x0), max(abs(specs$conc$offset))))
+for (m in names(specs))
+  ok(sprintf("%s spec: g equals (1, x0) and sum(ell) = 1, sum(ell*x) = x0", m),
+     max(abs(specs[[m]]$g - c(1, specs[[m]]$x0)),
+         abs(sum(specs[[m]]$ell) - 1),
+         abs(sum(specs[[m]]$ell * specs[[m]]$x) - specs[[m]]$x0)))
 
 # (a) aqueous estimate = g' theta, both routes
 d <- max(sapply(seq_len(nrow(res)), function(i) {
@@ -65,31 +91,27 @@ ok("stage-1 estimates identical across the two models",
    max(abs(as.matrix(ys[, c("pKa1","pKa2","pKa3","SE1","SE2","SE3")]) -
            as.matrix(cc[, c("pKa1","pKa2","pKa3","SE1","SE2","SE3")]))))
 
-# (f) analytic vs numerical joint covariance (informational, loose)
-rel <- max(abs(res$SE_joint - res$SE_joint_numeric) / res$SE_joint)
-cat(sprintf("%-58s %.2e %s\n", "analytic vs optimizer covariance (relative)",
-            rel, if (rel < 0.05) "OK" else "CHECK"))
+# (f) analytic covariance vs the optimizer's own SE for the aqueous
+# parameter.  Independent quantities: one comes from sigma^2 M^-1 with
+# analytic weights, the other from the fit's own Jacobian in centered
+# coordinates.  A transposed V or a wrong g breaks this immediately.
+ok("analytic vs optimizer covariance (relative difference)",
+   max(abs(res$SE_joint - res$SE_joint_numeric) / res$SE_joint), 0.05)
 
-# ---- optional: agreement with the delivered report ----
-ref <- file.path("..", "Report_2026-08-26", "summary_part1_YS.csv")
+# ---- agreement with the delivered report ----
+# summary_all_from_code.csv is the copy of this pipeline's output that
+# accompanies the delivered report; the two must be identical.
+ref <- file.path("..", "Report_2026-08-26", "summary_all_from_code.csv")
 if (file.exists(ref)) {
-  cmp <- function(path, model, keys) {
-    r <- read.csv(path, stringsAsFactors = FALSE)
-    n <- res[res$model == model & res$dataset %in% r$dataset, ]
-    n <- n[match(r$dataset, n$dataset), ]
-    cols <- intersect(c("pKa1","pKa2","pKa3","SE1","SE2","SE3",
-                        "aq_joint","SE_joint","aq_twostep","SE_a","SE_b","SE_c",
-                        "tau2_hat","Q","p_Q","R2_joint","R2_ols"), names(r))
-    max(abs(as.matrix(r[, cols]) - as.matrix(n[, cols])))
-  }
-  cat("\n-- agreement with the delivered report numbers --\n")
-  for (p in 1:2) for (m in c("YS", "Conc")) {
-    f <- file.path("..", "Report_2026-08-26", sprintf("summary_part%d_%s.csv", p, m))
-    if (file.exists(f))
-      cat(sprintf("%-58s %.2e\n", sprintf("part %d, %s: max |difference|", p, m),
-                  cmp(f, tolower(ifelse(m == "YS", "ys", "conc")))))
-  }
+  r <- read.csv(ref, stringsAsFactors = FALSE)
+  key <- function(d) paste(d$dataset, d$model)
+  n <- res[match(key(r), key(res)), ]
+  cols <- intersect(names(r), names(res))
+  cols <- cols[sapply(r[cols], is.numeric)]
+  cat("\n-- agreement with the delivered report --\n")
+  ok("report reference: max |difference| over all numeric columns",
+     max(abs(as.matrix(r[, cols]) - as.matrix(n[, cols]))), 1e-10)
 } else {
-  cat("\n(reference report CSVs not found; skipping that comparison)\n")
+  cat("\n(reference CSV of the delivered report not reachable; skipped)\n")
 }
 cat("\nall checks passed\n")

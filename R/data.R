@@ -7,8 +7,9 @@
 # spell the headers differently:
 #   pH column     : "pH" (probe reading) or "Adjusted pH" (corrected)
 #                   -- the header appears in both capitalisations
-#   shift column  : "Chemical Shift (ppm)" in most files,
-#                   "deltai_calc" in the other-CF2 files
+#   shift column  : "Chemical Shift (ppm)" in most sheets,
+#                   "deltai_calc" in some (the 5:3 other-CF2 file);
+#                   whichever is present is the resonance to use
 # The analysis uses the "Adjusted pH" column throughout; the raw
 # "pH" column is readable via ph_col = "raw" for comparison only.
 # ==============================================================
