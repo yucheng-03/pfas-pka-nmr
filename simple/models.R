@@ -2,6 +2,10 @@
 # This dataset is separate from the PFBA/PFPrA 60/70/80% analysis.
 # Function order: get_constants(), fit_ys(), fit_concentration(),
 #                 fit_ys_separated(), fit_concentration_separated().
+# Each fit uses the supplied per-observation f as a known, positive input.
+# The titration mean is (dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa).
+# This equals the original HH mean at pH - log10(f); do not pre-transform pH.
+# All reported SEs treat f as fixed; no SIMEX adjustment is applied.
 
 # =========== Fixed solvent constants ===========
 # Values follow R/constants.R in this repository,
@@ -22,7 +26,7 @@ get_constants <- function() {
 }
 
 # =========== YS model: joint fit of all three mixtures ===========
-# Input: one compound, with columns pH, ChemShift, and Condition.
+# Input: one compound, with columns pH, ChemShift, Condition, and f.
 # pH must already contain the intended values (currently Adjusted pH).
 # Condition must be "40% ACN", "50% ACN", or "60% ACN".
 #
@@ -37,9 +41,12 @@ fit_ys <- function(data) {
   mixtures <- constants[constants$condition != "pure water", ]
   epsilon_water <- constants$epsilon[constants$condition == "pure water"]
 
-  stopifnot(all(c("pH", "ChemShift", "Condition") %in% names(data)))
+  stopifnot(all(c("pH", "ChemShift", "Condition", "f") %in% names(data)))
   if (any(!is.finite(data$pH)) || any(!is.finite(data$ChemShift))) {
     stop("pH and ChemShift must contain finite numbers; no rows are dropped.")
+  }
+  if (!is.numeric(data$f) || any(!is.finite(data$f)) || any(data$f <= 0)) {
+    stop("f must contain positive finite numbers; no rows are dropped.")
   }
   data$grp <- match(data$Condition, mixtures$condition)
   if (anyNA(data$grp)) stop("Condition must be 40% ACN, 50% ACN, or 60% ACN.")
@@ -47,13 +54,13 @@ fit_ys <- function(data) {
   data$water_activity <- mixtures$water_activity[data$grp]
 
   # 2. Write the full mean equation, with a separate plateau pair per mixture.
-  ys_mean <- function(pH, grp, epsilon, water_activity, pka_water, A,
+  ys_mean <- function(pH, f, grp, epsilon, water_activity, pka_water, A,
                       dA_40, dHA_40, dA_50, dHA_50, dA_60, dHA_60) {
     dA <- ifelse(grp == 1, dA_40, ifelse(grp == 2, dA_50, dA_60))
     dHA <- ifelse(grp == 1, dHA_40, ifelse(grp == 2, dHA_50, dHA_60))
     pKa <- pka_water + A * (1 / epsilon - 1 / epsilon_water) -
       log10(water_activity)
-    return((dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa))
+    return((dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa))
   }
 
   # 3. Separate curve fits provide starting values only.
@@ -64,13 +71,15 @@ fit_ys <- function(data) {
   for (k in 1:3) {
     group_data <- data[data$grp == k, ]
     if (nrow(group_data) < 4) stop("Each mixture needs at least four observations.")
-    dA_start[k] <- group_data$ChemShift[which.max(group_data$pH)]
-    dHA_start[k] <- group_data$ChemShift[which.min(group_data$pH)]
+    # The equivalent HH coordinate supplies starting values only.
+    effective_pH <- group_data$pH - log10(group_data$f)
+    dA_start[k] <- group_data$ChemShift[which.max(effective_pH)]
+    dHA_start[k] <- group_data$ChemShift[which.min(effective_pH)]
     curve_fit <- minpack.lm::nlsLM(
-      ChemShift ~ (dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa),
+      ChemShift ~ (dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa),
       data = group_data,
       start = list(dA = unname(dA_start[k]), dHA = unname(dHA_start[k]),
-                   pKa = unname(mean(group_data$pH))),
+                   pKa = unname(mean(effective_pH))),
       control = minpack.lm::nls.lm.control(maxiter = 500)
     )
     if (!isTRUE(curve_fit$convInfo$isConv)) stop("A starting curve fit did not converge.")
@@ -84,7 +93,7 @@ fit_ys <- function(data) {
 
   # 4. One joint fit: pka_water, A, and six limiting shifts are all free.
   fit <- minpack.lm::nlsLM(
-    ChemShift ~ ys_mean(pH, grp, epsilon, water_activity, pka_water, A,
+    ChemShift ~ ys_mean(pH, f, grp, epsilon, water_activity, pka_water, A,
                        dA_40, dHA_40, dA_50, dHA_50, dA_60, dHA_60),
     data = data,
     start = list(
@@ -105,7 +114,7 @@ fit_ys <- function(data) {
   # alpha is the fraction in the high-pH form; 1 - alpha is the other fraction.
   pKa <- pka_water + A * (1 / data$epsilon - 1 / epsilon_water) -
     log10(data$water_activity)
-  alpha <- 1 / (1 + 10^(pKa - data$pH))
+  alpha <- 1 / (1 + data$f * 10^(pKa - data$pH))
   dA <- unname(estimates[c("dA_40", "dA_50", "dA_60")])[data$grp]
   dHA <- unname(estimates[c("dHA_40", "dHA_50", "dHA_60")])[data$grp]
   derivative_pka <- log(10) * (dHA - dA) * alpha * (1 - alpha)
@@ -128,7 +137,7 @@ fit_ys <- function(data) {
 }
 
 # =========== ACN concentration model: joint fit of all three mixtures ===========
-# Input: one compound, with columns pH, ChemShift, and Condition.
+# Input: one compound, with columns pH, ChemShift, Condition, and f.
 # pH must already contain the intended values (currently Adjusted pH).
 # Condition must be "40% ACN", "50% ACN", or "60% ACN".
 #
@@ -141,21 +150,24 @@ fit_concentration <- function(data) {
   constants <- get_constants()
   mixtures <- constants[constants$condition != "pure water", ]
 
-  stopifnot(all(c("pH", "ChemShift", "Condition") %in% names(data)))
+  stopifnot(all(c("pH", "ChemShift", "Condition", "f") %in% names(data)))
   if (any(!is.finite(data$pH)) || any(!is.finite(data$ChemShift))) {
     stop("pH and ChemShift must contain finite numbers; no rows are dropped.")
+  }
+  if (!is.numeric(data$f) || any(!is.finite(data$f)) || any(data$f <= 0)) {
+    stop("f must contain positive finite numbers; no rows are dropped.")
   }
   data$grp <- match(data$Condition, mixtures$condition)
   if (anyNA(data$grp)) stop("Condition must be 40% ACN, 50% ACN, or 60% ACN.")
   data$acn_fraction <- mixtures$acn_fraction[data$grp]
 
   # 2. Write the full mean equation, with a separate plateau pair per mixture.
-  concentration_mean <- function(pH, grp, acn_fraction, beta0, beta1,
+  concentration_mean <- function(pH, f, grp, acn_fraction, beta0, beta1,
                                  dA_40, dHA_40, dA_50, dHA_50, dA_60, dHA_60) {
     dA <- ifelse(grp == 1, dA_40, ifelse(grp == 2, dA_50, dA_60))
     dHA <- ifelse(grp == 1, dHA_40, ifelse(grp == 2, dHA_50, dHA_60))
     pKa <- beta0 + beta1 * acn_fraction
-    return((dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa))
+    return((dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa))
   }
 
   # 3. Separate curve fits provide starting values only.
@@ -166,13 +178,15 @@ fit_concentration <- function(data) {
   for (k in 1:3) {
     group_data <- data[data$grp == k, ]
     if (nrow(group_data) < 4) stop("Each mixture needs at least four observations.")
-    dA_start[k] <- group_data$ChemShift[which.max(group_data$pH)]
-    dHA_start[k] <- group_data$ChemShift[which.min(group_data$pH)]
+    # The equivalent HH coordinate supplies starting values only.
+    effective_pH <- group_data$pH - log10(group_data$f)
+    dA_start[k] <- group_data$ChemShift[which.max(effective_pH)]
+    dHA_start[k] <- group_data$ChemShift[which.min(effective_pH)]
     curve_fit <- minpack.lm::nlsLM(
-      ChemShift ~ (dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa),
+      ChemShift ~ (dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa),
       data = group_data,
       start = list(dA = unname(dA_start[k]), dHA = unname(dHA_start[k]),
-                   pKa = unname(mean(group_data$pH))),
+                   pKa = unname(mean(effective_pH))),
       control = minpack.lm::nls.lm.control(maxiter = 500)
     )
     if (!isTRUE(curve_fit$convInfo$isConv)) stop("A starting curve fit did not converge.")
@@ -183,7 +197,7 @@ fit_concentration <- function(data) {
 
   # 4. One joint fit: beta0, beta1, and six limiting shifts are all free.
   fit <- minpack.lm::nlsLM(
-    ChemShift ~ concentration_mean(pH, grp, acn_fraction, beta0, beta1,
+    ChemShift ~ concentration_mean(pH, f, grp, acn_fraction, beta0, beta1,
                                   dA_40, dHA_40, dA_50, dHA_50, dA_60, dHA_60),
     data = data,
     start = list(
@@ -202,7 +216,7 @@ fit_concentration <- function(data) {
   # 5. Analytic derivatives of the mean with respect to ALL eight parameters.
   # The global derivatives are d(mean)/d(pKa) times 1 and acn_fraction.
   pKa <- beta0 + beta1 * data$acn_fraction
-  alpha <- 1 / (1 + 10^(pKa - data$pH))
+  alpha <- 1 / (1 + data$f * 10^(pKa - data$pH))
   dA <- unname(estimates[c("dA_40", "dA_50", "dA_60")])[data$grp]
   dHA <- unname(estimates[c("dHA_40", "dHA_50", "dHA_60")])[data$grp]
   derivative_pka <- log(10) * (dHA - dA) * alpha * (1 - alpha)
@@ -224,7 +238,7 @@ fit_concentration <- function(data) {
 }
 
 # =========== YS model: separate curve fits, then an OLS line ===========
-# Input columns are pH, ChemShift, and Condition, as in fit_ys().
+# Input columns are pH, ChemShift, Condition, and f, as in fit_ys().
 # Stage 1 estimates a separate pKa and its SE for each mixture.
 # Stage 2 fits pKa + log10(water_activity) = B + A / epsilon by ordinary LS.
 # The current report uses SE_c (measurement error + lack-of-fit) for the
@@ -237,9 +251,12 @@ fit_ys_separated <- function(data) {
   epsilon_water <- constants$epsilon[constants$condition == "pure water"]
   n_mixtures <- nrow(mixtures)
 
-  stopifnot(all(c("pH", "ChemShift", "Condition") %in% names(data)))
+  stopifnot(all(c("pH", "ChemShift", "Condition", "f") %in% names(data)))
   if (any(!is.finite(data$pH)) || any(!is.finite(data$ChemShift))) {
     stop("pH and ChemShift must contain finite numbers; no rows are dropped.")
+  }
+  if (!is.numeric(data$f) || any(!is.finite(data$f)) || any(data$f <= 0)) {
+    stop("f must contain positive finite numbers; no rows are dropped.")
   }
   data$grp <- match(data$Condition, mixtures$condition)
   if (anyNA(data$grp)) stop("Condition must be 40% ACN, 50% ACN, or 60% ACN.")
@@ -256,13 +273,15 @@ fit_ys_separated <- function(data) {
   for (k in 1:n_mixtures) {
     group_data <- data[data$grp == k, ]
     if (nrow(group_data) < 4) stop("Each mixture needs at least four observations.")
-    dA_start <- group_data$ChemShift[which.max(group_data$pH)]
-    dHA_start <- group_data$ChemShift[which.min(group_data$pH)]
+    # The equivalent HH coordinate supplies starting values only.
+    effective_pH <- group_data$pH - log10(group_data$f)
+    dA_start <- group_data$ChemShift[which.max(effective_pH)]
+    dHA_start <- group_data$ChemShift[which.min(effective_pH)]
     curve_fit <- minpack.lm::nlsLM(
-      ChemShift ~ (dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa),
+      ChemShift ~ (dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa),
       data = group_data,
       start = list(dA = unname(dA_start), dHA = unname(dHA_start),
-                   pKa = unname(mean(group_data$pH))),
+                   pKa = unname(mean(effective_pH))),
       control = minpack.lm::nls.lm.control(maxiter = 500)
     )
     if (!isTRUE(curve_fit$convInfo$isConv)) stop("A separated curve fit did not converge.")
@@ -325,7 +344,7 @@ fit_ys_separated <- function(data) {
 }
 
 # =========== ACN concentration model: separate curve fits, then an OLS line ===========
-# Input columns are pH, ChemShift, and Condition, as in fit_concentration().
+# Input columns are pH, ChemShift, Condition, and f, as in fit_concentration().
 # Stage 1 estimates a separate pKa and its SE for each mixture.
 # Stage 2 fits pKa = beta0 + beta1 * acn_fraction by ordinary LS.
 # Pure water has acn_fraction = 0, so beta0 is the aqueous pKa.
@@ -337,9 +356,12 @@ fit_concentration_separated <- function(data) {
   mixtures <- constants[constants$condition != "pure water", ]
   n_mixtures <- nrow(mixtures)
 
-  stopifnot(all(c("pH", "ChemShift", "Condition") %in% names(data)))
+  stopifnot(all(c("pH", "ChemShift", "Condition", "f") %in% names(data)))
   if (any(!is.finite(data$pH)) || any(!is.finite(data$ChemShift))) {
     stop("pH and ChemShift must contain finite numbers; no rows are dropped.")
+  }
+  if (!is.numeric(data$f) || any(!is.finite(data$f)) || any(data$f <= 0)) {
+    stop("f must contain positive finite numbers; no rows are dropped.")
   }
   data$grp <- match(data$Condition, mixtures$condition)
   if (anyNA(data$grp)) stop("Condition must be 40% ACN, 50% ACN, or 60% ACN.")
@@ -356,13 +378,15 @@ fit_concentration_separated <- function(data) {
   for (k in 1:n_mixtures) {
     group_data <- data[data$grp == k, ]
     if (nrow(group_data) < 4) stop("Each mixture needs at least four observations.")
-    dA_start <- group_data$ChemShift[which.max(group_data$pH)]
-    dHA_start <- group_data$ChemShift[which.min(group_data$pH)]
+    # The equivalent HH coordinate supplies starting values only.
+    effective_pH <- group_data$pH - log10(group_data$f)
+    dA_start <- group_data$ChemShift[which.max(effective_pH)]
+    dHA_start <- group_data$ChemShift[which.min(effective_pH)]
     curve_fit <- minpack.lm::nlsLM(
-      ChemShift ~ (dA * 10^pH + dHA * 10^pKa) / (10^pH + 10^pKa),
+      ChemShift ~ (dA * 10^pH + dHA * f * 10^pKa) / (10^pH + f * 10^pKa),
       data = group_data,
       start = list(dA = unname(dA_start), dHA = unname(dHA_start),
-                   pKa = unname(mean(group_data$pH))),
+                   pKa = unname(mean(effective_pH))),
       control = minpack.lm::nls.lm.control(maxiter = 500)
     )
     if (!isTRUE(curve_fit$convInfo$isConv)) stop("A separated curve fit did not converge.")

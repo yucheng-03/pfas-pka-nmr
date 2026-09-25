@@ -1,6 +1,7 @@
 # Run from the pfas-pka-nmr repository root:
 # Rscript simple/run_analysis.R
 # This script runs the eight workbooks below, saving four results and three figures each.
+# All four fits include the supplied per-observation f; results go to simple/output/with_f/.
 # Edit the dataset table to choose files, display labels, and chemical-shift columns.
 # Required packages: readxl, minpack.lm, ggplot2, patchwork.
 # Put the workbooks in data/ as described in data/README.md.
@@ -17,8 +18,8 @@ if (!file.exists(file.path(analysis_dir, "models.R"))) {
 source(file.path(analysis_dir, "models.R"))
 
 data_dir <- "data"
-output_dir <- file.path(analysis_dir, "output")
-dir.create(output_dir, showWarnings = FALSE)
+output_dir <- file.path(analysis_dir, "output", "with_f")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 # One row per distinct workbook; IDs distinguish different peaks and data versions.
 datasets <- data.frame(
@@ -44,8 +45,10 @@ datasets <- data.frame(
 )
 
 # Names below use lowercase, matching the header normalization during reading.
-# Adjusted pH is already in the workbook; no extra pH correction is applied here.
+# Pass workbook Adjusted pH unchanged; models.R includes f explicitly in the mean.
+# Do not also subtract log10(f) here, which would apply f twice.
 ph_column <- "adjusted ph"
+f_column <- "f"
 constants <- get_constants()
 conditions <- constants$condition[constants$condition != "pure water"]
 ci_multiplier <- 1.96
@@ -78,28 +81,36 @@ for (dataset_index in seq_len(nrow(datasets))) {
     if (sum(names(sheet_data) == shift_column) != 1) {
       stop(condition, ": expected exactly one column named '", shift_column, "'.")
     }
+    if (sum(names(sheet_data) == f_column) != 1) {
+      stop(condition, ": expected exactly one column named '", f_column, "'.")
+    }
     if (nrow(sheet_data) == 0) stop(condition, ": no observations found.")
 
     pH <- as.numeric(sheet_data[[ph_column]])
     chemical_shift <- as.numeric(sheet_data[[shift_column]])
+    f <- as.numeric(sheet_data[[f_column]])
     if (any(!is.finite(pH)) || any(!is.finite(chemical_shift))) {
       stop(condition, ": missing or invalid pH/shift values; inspect the source sheet.")
     }
+    if (any(!is.finite(f)) || any(f <= 0)) {
+      stop(condition, ": f must contain positive finite numbers; inspect the source sheet.")
+    }
 
     # Preserve every observation, including repeated pH values, in its original order.
-    group_data <- data.frame(pH = pH, ChemShift = chemical_shift, Condition = condition)
+    group_data <- data.frame(pH = pH, ChemShift = chemical_shift, Condition = condition, f = f)
     titration_data <- rbind(titration_data, group_data)
   }
   titration_data$Condition <- factor(titration_data$Condition, levels = conditions)
 
   # =========== 3. Inspect the data supplied to the model functions ===========
   cat("\nCompound:", compound, "\nWorkbook:", data_file, "\n")
-  cat("Selected columns:", ph_column, "/", shift_column, "\n\n")
+  cat("Selected columns:", ph_column, "/", shift_column, "/", f_column, "\n\n")
   print(table(titration_data$Condition))
   print(head(titration_data))
 
   # =========== 4. Fit both models by both methods and compare results ===========
   # Each call receives the same observations and returns its own aqueous estimate and SE.
+  # f is a fixed input in every fit; reported SEs do not include uncertainty in f.
   ys_aggregated <- fit_ys(titration_data)
   ys_separated <- fit_ys_separated(titration_data)
   concentration_aggregated <- fit_concentration(titration_data)
@@ -118,6 +129,7 @@ for (dataset_index in seq_len(nrow(datasets))) {
   )
 
   cat("\nAqueous pKa comparison:", compound, "\n")
+  cat("All fits include the supplied f, treated as fixed.\n")
   cat("SE_c includes measurement uncertainty and estimated lack-of-fit.\n\n")
   print(comparison_table, row.names = FALSE, digits = 6)
   if (nzchar(data_note)) cat("Data note:", data_note, "\n")
@@ -129,6 +141,7 @@ for (dataset_index in seq_len(nrow(datasets))) {
     data.frame(dataset_id = dataset_id, compound = compound,
                source_file = datasets$source_file[dataset_index],
                ph_column = ph_column, shift_column = shift_column,
+               f_column = f_column, f_included = TRUE,
                n = nrow(titration_data), data_note = data_note),
     comparison_table
   )
@@ -244,6 +257,7 @@ for (dataset_index in seq_len(nrow(datasets))) {
   ys_plot <- ys_aggregated_plot + ys_separated_plot + plot_annotation(
     title = paste(compound, "- Yasuda-Shedlovsky"),
     caption = paste0(
+      "Fits include each observation's supplied f; intervals treat f as fixed.\n",
       "Green squares: independent mixture pKa estimates + log10(water activity), with 95% intervals.\n",
       "Stars: aqueous extrapolations. Left interval: joint-NLS SE; right interval: SE_c (measurement + lack-of-fit).",
       if (nzchar(data_note)) paste0("\n", data_note) else ""),
@@ -338,6 +352,7 @@ for (dataset_index in seq_len(nrow(datasets))) {
   concentration_plot <- concentration_aggregated_plot + concentration_separated_plot + plot_annotation(
     title = paste(compound, "- ACN concentration model"),
     caption = paste0(
+      "Fits include each observation's supplied f; intervals treat f as fixed.\n",
       "Green squares: independent mixture pKa estimates with 95% intervals. ACN fraction 0.4 means 40% ACN.\n",
       "Stars: aqueous extrapolations at C = 0. Left interval: joint-NLS SE; right interval: SE_c (measurement + lack-of-fit).",
       if (nzchar(data_note)) paste0("\n", data_note) else ""),
